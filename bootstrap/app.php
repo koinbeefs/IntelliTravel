@@ -11,9 +11,18 @@ return Application::configure(basePath: dirname(__DIR__))
         commands: __DIR__.'/../routes/console.php',
         health: '/up',
     )
-    ->withMiddleware(function (Middleware $middleware): void {
-        //
+    ->withMiddleware(function (Middleware $middleware) {
+        // Handle CORS directly here
+        $middleware->validateCsrfTokens(except: [
+            // 'stripe/*', // Add exceptions here if needed
+        ]);
+        
+        // This is the Laravel 11 way to allow any origin (easiest for dev/railway)
+        $middleware->trustProxies(at: '*');
+        
+        // You can explicitly configure CORS headers if the default isn't working:
+        // (But usually Laravel 11 defaults are 'allow all' for API routes)
     })
-    ->withExceptions(function (Exceptions $exceptions): void {
+    ->withExceptions(function (Exceptions $exceptions) {
         //
     })->create();
