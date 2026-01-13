@@ -94,10 +94,10 @@ class AuthController extends Controller
 
             // Redirect to frontend with token
             // Note: Change port 5173 to your actual frontend port if different
-            return redirect("http://localhost:5173/auth/callback?token={$token}");
+            return redirect("https://intelli-travel-mobile.vercel.app/auth/callback?token={$token}");
 
         } catch (\Exception $e) {
-            return redirect("http://localhost:5173/login?error=Google login failed");
+            return redirect("https://intelli-travel-mobile.vercel.app/login?error=Google login failed");
         }
     }
 }
