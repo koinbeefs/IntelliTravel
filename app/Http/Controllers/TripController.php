@@ -1,4 +1,4 @@
-<?php
+<?php declare(strict_types=1);
 
 namespace App\Http\Controllers;
 
@@ -19,16 +19,58 @@ class TripController extends Controller
     // Get all user trips
     public function index(Request $request)
     {
-        return $request->user()->trips()
+        // Get trips owned by user
+        $ownedTrips = $request->user()->trips()
+            ->with(['users', 'itineraries', 'owner'])
             ->withCount('itineraries')
             ->orderBy('created_at', 'desc')
             ->get();
+
+        // Get shared trips where user is an accepted collaborator via pivot table
+        $sharedTrips = Trip::whereHas('users', function ($query) use ($request) {
+            $query->where('trip_user.user_id', $request->user()->id)
+                  ->where('trip_user.status', 'accepted');
+        })
+        ->with(['users', 'itineraries', 'owner'])
+        ->withCount('itineraries')
+        ->orderBy('created_at', 'desc')
+        ->get();
+
+        // Get pending trip invitations from notifications
+        $pendingNotifications = \App\Models\Notification::where('user_id', $request->user()->id)
+            ->where('type', 'trip_invite')
+            ->where('read', false)
+            ->get();
+
+        $pendingTripIds = $pendingNotifications->pluck('data.trip_id')->filter();
+        $pendingTrips = Trip::whereIn('id', $pendingTripIds)
+            ->with(['users', 'itineraries', 'owner'])
+            ->withCount('itineraries')
+            ->orderBy('created_at', 'desc')
+            ->get()
+            ->map(function ($trip) {
+                $trip->invitation_status = 'pending';
+                return $trip;
+            });
+
+        // Merge and remove duplicates (in case user is both owner and collaborator)
+        $allTrips = $ownedTrips->merge($sharedTrips)->merge($pendingTrips)->unique('id');
+
+        return $allTrips->values();
     }
 
     // Get single trip with itinerary
-    public function show($id)
+    public function show(Request $request, $id)
     {
-        $trip = Trip::with('itineraries')->findOrFail($id);
+        $trip = Trip::with(['itineraries', 'users', 'owner'])->findOrFail($id);
+
+        $isCollaborator = $trip->user_id === $request->user()->id || 
+            $trip->users()->where('user_id', $request->user()->id)->where('status', 'accepted')->exists();
+
+        if (!$isCollaborator) {
+            return response()->json(['message' => 'Unauthorized'], 403);
+        }
+
         return response()->json($trip);
     }
 
@@ -37,12 +79,12 @@ class TripController extends Controller
     {
         // 1. Validate
         $validated = $request->validate([
-            'title' => 'required|string',
-            'destination' => 'required|string',
+            'title' => 'required|string|max:255',
+            'destination' => 'required|string|max:255',
             'trip_type' => 'required|in:manual,automatic',
             'start_date' => 'required|date',
             'end_date' => 'nullable|date|after_or_equal:start_date',
-            'transit_type' => 'required|in:car,bike,walk,bus',
+            'transit_type' => 'required|in:car,bus,train,plane,ferry,bike,walk',
             'center_lat' => 'required|numeric',
             'center_lng' => 'required|numeric',
             'description' => 'nullable|string'
@@ -66,7 +108,7 @@ class TripController extends Controller
             'center_lat' => $validated['center_lat'],
             'center_lng' => $validated['center_lng'],
             'description' => $request->description ?? null,
-            'is_active' => true,      // Default to active
+            'is_active' => false,      // Default to planning
             'is_published' => false   // Default to private
         ]);
 
@@ -93,12 +135,26 @@ class TripController extends Controller
     public function update(Request $request, $id)
     {
         $trip = Trip::findOrFail($id);
-        // Ensure user owns the trip
-        if ($request->user()->id !== $trip->user_id) {
+        
+        $isCollaborator = $trip->user_id === $request->user()->id || 
+            $trip->users()->where('user_id', $request->user()->id)->where('status', 'accepted')->exists();
+
+        if (!$isCollaborator) {
             return response()->json(['message' => 'Unauthorized'], 403);
         }
 
-        $trip->update($request->all());
+        $validated = $request->validate([
+            'title' => 'sometimes|required|string|max:255',
+            'destination' => 'sometimes|required|string|max:255',
+            'start_date' => 'sometimes|required|date',
+            'end_date' => 'sometimes|nullable|date|after_or_equal:start_date',
+            'transit_type' => 'sometimes|required|in:car,bus,train,plane,ferry,bike,walk',
+            'description' => 'sometimes|nullable|string',
+            'is_active' => 'sometimes|boolean',
+            'is_published' => 'sometimes|boolean',
+        ]);
+
+        $trip->update($validated);
         return response()->json($trip);
     }
 
@@ -136,8 +192,11 @@ class TripController extends Controller
 {
     $user = auth()->user();
 
+    $startDate = \Illuminate\Support\Carbon::parse($trip->start_date);
+    $endDate = \Illuminate\Support\Carbon::parse($trip->end_date);
+
     $days = $trip->start_date && $trip->end_date
-        ? $trip->start_date->diffInDays($trip->end_date) + 1
+        ? $startDate->diffInDays($endDate) + 1
         : 3;
 
     $items = $engine->generateAutoItinerary(

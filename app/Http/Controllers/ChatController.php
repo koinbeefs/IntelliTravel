@@ -9,11 +9,17 @@ use Illuminate\Http\Request;
 class ChatController extends Controller
 {
     // GET /trips/{id}/messages
-    public function index($tripId)
+    public function index(Request $request, $tripId)
     {
         // Simple authorization: Must be part of trip
         $trip = Trip::findOrFail($tripId);
-        // Add check if user is in trip->users()...
+        
+        $isCollaborator = $trip->user_id === $request->user()->id || 
+            $trip->users()->where('user_id', $request->user()->id)->where('status', 'accepted')->exists();
+
+        if (!$isCollaborator) {
+            return response()->json(['message' => 'Unauthorized'], 403);
+        }
 
         return ChatMessage::where('trip_id', $tripId)
             ->with('user:id,username,profile_pic')
@@ -24,12 +30,25 @@ class ChatController extends Controller
     // POST /trips/{id}/messages
     public function store(Request $request, $tripId)
     {
-        $request->validate(['content' => 'required|string']);
+        $trip = Trip::findOrFail($tripId);
+        
+        $isCollaborator = $trip->user_id === $request->user()->id || 
+            $trip->users()->where('user_id', $request->user()->id)->where('status', 'accepted')->exists();
+
+        if (!$isCollaborator) {
+            return response()->json(['message' => 'Unauthorized'], 403);
+        }
+
+        $request->validate([
+            'content' => 'required|string',
+            'type' => 'nullable|string'
+        ]);
 
         $message = ChatMessage::create([
             'trip_id' => $tripId,
             'user_id' => $request->user()->id,
-            'content' => $request->content
+            'content' => $request->input('content'),
+            'type' => $request->input('type', 'text')
         ]);
 
         return response()->json($message->load('user'), 201);

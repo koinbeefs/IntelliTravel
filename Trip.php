@@ -20,21 +20,11 @@ class Trip extends Model
         'is_published' => 'boolean',
     ];
 
-    public function users()
+    public function user()
     {
         return $this->belongsToMany(User::class, 'trip_user')
                 ->withPivot('role', 'status')
                 ->withTimestamps();
-    }
-
-    // Keep old method for backward compatibility
-    public function user()
-    {
-        return $this->users();
-    }
-    public function owner()
-    {
-        return $this->belongsTo(User::class, 'user_id');
     }
     public function messages()
     {

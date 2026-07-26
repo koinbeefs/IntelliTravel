@@ -27,6 +27,7 @@ class AuthController extends Controller
         ]);
 
         $token = $user->createToken('auth_token')->plainTextToken;
+        $user->setAttribute('stats', $user->calculateStats());
 
         return response()->json([
             'user' => $user,
@@ -52,6 +53,7 @@ class AuthController extends Controller
 
         $user = Auth::user();
         $token = $user->createToken('auth_token')->plainTextToken;
+        $user->setAttribute('stats', $user->calculateStats());
 
         return response()->json([
             'user' => $user,
@@ -67,37 +69,78 @@ class AuthController extends Controller
 
     public function user(Request $request)
     {
-        return response()->json($request->user());
+        $user = $request->user();
+        $user->setAttribute('stats', $user->calculateStats());
+        return response()->json($user);
     }
     public function googleRedirect()
     {
-        return Socialite::driver('google')->stateless()->redirect();
+        // Detect if request came from LAN and use appropriate redirect URI.
+        // The LAN IP must be registered in Google Cloud Console under Authorized redirect URIs.
+        $requestOrigin = request()->getHost();
+        $isLAN = str_contains($requestOrigin, '192.168') || 
+                 ($requestOrigin !== 'localhost' && $requestOrigin !== '127.0.0.1');
+
+        $redirectUri = $isLAN 
+            ? env('GOOGLE_REDIRECT_URI_LAN', 'http://192.168.1.11:8000/api/auth/google/callback')
+            : env('GOOGLE_REDIRECT_URI', 'http://localhost:8000/api/auth/google/callback');
+
+        config(['services.google.redirect' => $redirectUri]);
+
+        // Google requires device_id and device_name for private IP redirect URIs
+        $params = [];
+        if ($isLAN) {
+            $params = [
+                'device_id' => 'intellitravel-web-' . md5($requestOrigin),
+                'device_name' => 'IntelliTravel Web App',
+            ];
+        }
+
+        return Socialite::driver('google')->stateless()->with($params)->redirect();
     }
 
     public function googleCallback()
     {
         try {
             $googleUser = Socialite::driver('google')->stateless()->user();
-            
+
             // Find existing user or create new one
             $user = User::updateOrCreate(
                 ['email' => $googleUser->getEmail()],
                 [
-                    'username' => $googleUser->getName(), // Or generate a unique username
+                    'username' => $googleUser->getName() ?? $googleUser['email'],
                     'google_id' => $googleUser->getId(),
                     'profile_pic' => $googleUser->getAvatar(),
                     'password' => null, // No password for Google users
                 ]
             );
-
+            Auth::login($user);
             $token = $user->createToken('auth_token')->plainTextToken;
+            $user->setAttribute('stats', $user->calculateStats());
 
-            // Redirect to frontend with token
-            // Note: Change port 5173 to your actual frontend port if different
-            return redirect("https://intelli-travel-mobile.vercel.app/auth/callback?token={$token}");
+            // Get base URL for frontend redirect (handle LAN vs localhost)
+            $requestOrigin = request()->getHost();
+            $isLAN = str_contains($requestOrigin, '192.168') || 
+                     $requestOrigin !== 'localhost' && 
+                     $requestOrigin !== '127.0.0.1';
+
+            $frontendUrl = $isLAN 
+                ? env('FRONTEND_LAN_URL', 'http://192.168.1.11:8080')
+                : env('FRONTEND_URL', 'http://localhost:8080');
+
+            return redirect("{$frontendUrl}/auth/callback?token={$token}");
 
         } catch (\Exception $e) {
-            return redirect("https://intelli-travel-mobile.vercel.app/login?error=Google login failed");
+            $requestOrigin = request()->getHost();
+            $isLAN = str_contains($requestOrigin, '192.168') || 
+                     $requestOrigin !== 'localhost' && 
+                     $requestOrigin !== '127.0.0.1';
+
+            $frontendUrl = $isLAN 
+                ? env('FRONTEND_LAN_URL', 'http://192.168.1.11:8080')
+                : env('FRONTEND_URL', 'http://localhost:8080');
+
+            return redirect("{$frontendUrl}/login?error=Google login failed");
         }
     }
 }
